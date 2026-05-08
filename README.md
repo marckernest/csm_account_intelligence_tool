@@ -134,10 +134,10 @@ Per-file JSON in the output directory:
   "action_items": ["..."],
   "recommended_next_steps": ["..."],
   "health_score": 7,
-  "_file": "2025-05-05_Passion_Joe_and_Marck.md",
-  "_account_name": "Passion",
+  "_file": "2025-05-05_Joe_and_Marck.md",
+  "_account_name": "Joe",
   "_call_date": "2025-05-05 11:46 UTC",
-  "_participants": ["Ben Batting", "Marck Ernest"]
+  "_participants": ["Ben B.", "Marck Ernest"]
 }
 ```
 
