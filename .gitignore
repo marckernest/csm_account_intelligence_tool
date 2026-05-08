@@ -1,5 +1,6 @@
 .env
-fathom_transcripts/
+fathom_transcripts/*
+!fathom_transcripts/.gitkeep
 output/
 __pycache__/
 *.pyc

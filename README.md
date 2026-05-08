@@ -87,11 +87,23 @@ python transcript_analyst.py --use-claude --claude-model claude-sonnet-4-2025051
 - **Local LM Studio** — Daily driver. Run against your entire Fathom export. No costs, no limits.
 - **Claude API** — Deep-dive on 5-10 key calls where higher analytical quality justifies the cost.
 
+### Model Notes
+
+**Qwen3.5 (default):** This model separates its output into `reasoning_content` (the model's internal thinking process) and `content` (the final response). The script handles both fields transparently — if `content` is empty, `reasoning_content` is used as a fallback. This is normal behavior for reasoning models; the output is fully parsed regardless of which field contains the JSON.
+
+**Timeout:** Local reasoning models like Qwen3.5 9B can take 1-3 minutes per transcript depending on your hardware. The script uses a 300-second timeout to accommodate this. Progress is shown per file in the console.
+
 ---
 
 ## Input
 
-Place Fathom-format `.md` files in the input directory. Each file should contain:
+Place Fathom-format `.md` files in `fathom_transcripts/`. Create the directory if it doesn't exist:
+
+```bash
+mkdir fathom_transcripts
+```
+
+Each file should contain:
 
 ```markdown
 # AccountName: Meeting Title
@@ -142,6 +154,7 @@ With `--aggregate`, an additional `aggregate.json` is generated with `overall` s
 ├── output/                  # Output: per-file + aggregate JSON (gitignored)
 ├── .env                     # API keys (gitignored)
 ├── README.md
+├── fathom_transcripts/.gitkeep  # Placeholder (directory tracked, contents gitignored)
 └── Project_Plan_AccountIntelligenceTool.md
 ```
 
