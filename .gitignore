@@ -1,0 +1,5 @@
+.env
+fathom_transcripts/
+output/
+__pycache__/
+*.pyc
