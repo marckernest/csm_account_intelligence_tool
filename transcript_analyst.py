@@ -10,10 +10,68 @@ import json
 import os
 import re
 import sys
+import threading
+import time
 from pathlib import Path
 
 from dotenv import load_dotenv
 from openai import OpenAI
+
+_ENC = getattr(sys.stdout, "encoding", "")
+_SUPPORTS_UNICODE = _ENC and _ENC.lower() in ("utf-8", "utf8", "utf-16", "unicode")
+
+SEP = "\u2500" if _SUPPORTS_UNICODE else "-"
+CHAR_X = "\u2717" if _SUPPORTS_UNICODE else "x"
+CHAR_WARN = "\u26a0" if _SUPPORTS_UNICODE else "!"
+CHAR_ARROW = "\u2192" if _SUPPORTS_UNICODE else "->"
+
+
+def format_elapsed(seconds):
+    if seconds < 60:
+        return f"{int(seconds)}s"
+    return f"{int(seconds // 60)}m {int(seconds % 60)}s"
+
+
+def print_inline(text):
+    sys.stdout.write(text)
+    sys.stdout.flush()
+
+
+def map_llm_error(e, args):
+    msg = str(e).lower()
+    if args.use_claude:
+        if "api_key" in msg or "auth" in msg or "unauthorized" in msg:
+            return "Claude API authentication failed"
+        if "rate" in msg and "limit" in msg:
+            return "Claude API rate limit exceeded"
+        return f"Claude API error: {e}"
+    else:
+        url = args.lm_studio_url.replace("http://", "").replace("/v1", "")
+        if "connection refused" in msg or "connection error" in msg or "cannot connect" in msg:
+            return f"LM Studio not responding ({url})"
+        if "timeout" in msg or "timed out" in msg:
+            return f"LM Studio timed out ({args.timeout}s)"
+        if "model not found" in msg or ("model" in msg and "not found" in msg):
+            return f"Model '{args.model}' not found in LM Studio"
+        return f"LM Studio error: {e}"
+
+
+def map_llm_tip(e, args):
+    msg = str(e).lower()
+    if args.use_claude:
+        if "api_key" in msg or "auth" in msg:
+            return "check your ANTHROPIC_API_KEY in .env"
+        if "rate" in msg and "limit" in msg:
+            return "wait a moment and try again"
+        return None
+    else:
+        if "connection refused" in msg or "connection error" in msg:
+            return "check LM Studio is running and a model is loaded"
+        if "timeout" in msg or "timed out" in msg:
+            return "the model may be too large for your hardware; try a smaller model"
+        if "model not found" in msg:
+            return "check the model name with --model (default: local-model)"
+        return None
 
 
 def parse_transcript(path):
@@ -130,8 +188,8 @@ health_score is 1-10 (1=critical risk, 10=perfect health).""".strip()
     ]
 
 
-def call_lm_studio(messages, model="local-model", base_url="http://localhost:1234/v1"):
-    client = OpenAI(base_url=base_url, api_key="not-needed", timeout=300.0)
+def call_lm_studio(messages, model="local-model", base_url="http://localhost:1234/v1", timeout=300.0):
+    client = OpenAI(base_url=base_url, api_key="not-needed", timeout=timeout)
     response = client.chat.completions.create(
         model=model,
         messages=messages,
@@ -200,35 +258,67 @@ def parse_response(text):
     return None
 
 
-def process_file(path, args, output_dir):
-    print(f"Processing: {path.name}...")
+def process_file(path, args, output_dir, index, total):
+    print(f"[{index}/{total}] {path.name}")
 
     try:
         data = parse_transcript(path)
     except Exception as e:
-        print(f"  Error parsing {path.name}: {e}")
+        print(f"      {CHAR_X} Parse error: {e}")
         return None
 
     messages = build_prompt(data, include_full_transcript=args.full_transcripts)
+    start = time.time()
+    print_inline(f"      Analysing...")
+
+    stop_timer = threading.Event()
+
+    def _timer():
+        while not stop_timer.is_set():
+            elapsed = int(time.time() - start)
+            print_inline(f"\r      Analysing... ({format_elapsed(elapsed)})")
+            stop_timer.wait(1)
+
+    timer_thread = threading.Thread(target=_timer, daemon=True)
+    timer_thread.start()
 
     try:
         if args.use_claude:
             response_text = call_claude(messages, model=args.claude_model)
         else:
             response_text = call_lm_studio(
-                messages, model=args.model, base_url=args.lm_studio_url
+                messages, model=args.model, base_url=args.lm_studio_url,
+                timeout=args.timeout,
             )
     except Exception as e:
-        print(f"  LLM call failed for {path.name}: {e}")
+        stop_timer.set()
+        timer_thread.join(1)
+        elapsed = int(time.time() - start)
+        print(f"\r      Analysing... {CHAR_X} {map_llm_error(e, args)}")
+        tip = map_llm_tip(e, args)
+        if tip:
+            print(f"      Tip: {tip}")
         return None
 
+    stop_timer.set()
+    timer_thread.join(1)
+    elapsed = int(time.time() - start)
+
     result = parse_response(response_text)
+    health_str = ""
     if result is None:
-        print(f"  Warning: Could not parse JSON for {path.name}. Saving raw.")
+        print(f"\r      Analysing... done ({format_elapsed(elapsed)})  {CHAR_WARN} Could not parse JSON")
         result = {"_raw_response": response_text, "_parse_error": True}
     elif not isinstance(result, dict):
-        print(f"  Warning: Unexpected response type for {path.name}. Saving raw.")
+        print(f"\r      Analysing... done ({format_elapsed(elapsed)})  {CHAR_WARN} Unexpected response type")
         result = {"_raw_response": response_text, "_parse_error": True}
+    else:
+        print(f"\r      Analysing... done ({format_elapsed(elapsed)})")
+        health = result.get("health_score")
+        if isinstance(health, (int, float)):
+            health_str = f"health: {health}/10"
+            if health < 5:
+                health_str += f"  {CHAR_WARN} low"
 
     result["_file"] = path.name
     result["_account_name"] = data["account_name"]
@@ -237,14 +327,12 @@ def process_file(path, args, output_dir):
 
     output_path = output_dir / f"{path.stem}.json"
     output_path.write_text(json.dumps(result, indent=2), encoding="utf-8")
-    print(f"  -> {output_path}")
+    print(f"      {CHAR_ARROW} {output_path}  {health_str}")
 
     return result
 
 
 def build_aggregate(results, output_dir):
-    print("\nBuilding aggregate report...")
-
     accounts = sorted(
         set(r.get("_account_name", "") for r in results if r)
     )
@@ -268,20 +356,19 @@ def build_aggregate(results, output_dir):
 
     path = output_dir / "aggregate.json"
     path.write_text(json.dumps(aggregate, indent=2), encoding="utf-8")
-    print(f"Aggregate report: {path}")
 
 
 def main():
     load_dotenv()
 
     parser = argparse.ArgumentParser(
-        description="Account Intelligence Tool — Analyze Fathom transcript files"
+        description="Account Intelligence Tool — Analyze call transcript files"
     )
 
     parser.add_argument(
         "--input-dir",
-        default="./fathom_transcripts",
-        help="Directory with Fathom transcript .md files (default: ./fathom_transcripts)",
+        default="./raw_transcripts",
+        help="Directory with transcript .md files (default: ./raw_transcripts)",
     )
     parser.add_argument(
         "--output-dir",
@@ -289,9 +376,9 @@ def main():
         help="Directory for output JSON files (default: ./output)",
     )
     parser.add_argument(
-        "--aggregate",
+        "--no-aggregate",
         action="store_true",
-        help="Build a single aggregate JSON from all results",
+        help="Skip building aggregate.json (default: aggregate is generated)",
     )
     parser.add_argument(
         "--use-claude",
@@ -318,6 +405,17 @@ def main():
         default="http://localhost:1234/v1",
         help="LM Studio base URL (default: http://localhost:1234/v1)",
     )
+    parser.add_argument(
+        "--timeout",
+        type=int,
+        default=300,
+        help="Timeout in seconds for LM Studio API calls (default: 300)",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Re-process transcripts even if output already exists",
+    )
 
     args = parser.parse_args()
 
@@ -327,36 +425,80 @@ def main():
     if not input_dir.exists():
         print(
             f"Error: Input directory '{input_dir}' not found.\n"
-            "Create it and add Fathom transcript .md files, "
+            "Create it and add transcript .md files, "
             "or use --input-dir to point elsewhere."
         )
         sys.exit(1)
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    files = sorted(input_dir.glob("*.md"))
-    if not files:
+    all_files = sorted(input_dir.glob("*.md"))
+    if not all_files:
         print(f"No .md files found in '{input_dir}'.")
         sys.exit(0)
 
-    print(f"Found {len(files)} transcript(s) in '{input_dir}'")
-    print(f"Backend: {'Claude API' if args.use_claude else 'LM Studio (local)'}")
-    print(f"Transcript: {'full' if args.full_transcripts else 'condensed'}")
+    new_files = []
+    skipped = 0
+    for path in all_files:
+        output_path = output_dir / f"{path.stem}.json"
+        if output_path.exists() and not args.force:
+            skipped += 1
+        else:
+            new_files.append(path)
+
+    total = len(all_files)
+    new_count = len(new_files)
+
+    url = args.lm_studio_url.replace("http://", "").replace("/v1", "")
+    print("Account Intelligence Tool")
+    print(SEP * 60)
+    if skipped:
+        print(f"Transcripts: {total} found in '{input_dir}'")
+        print(f"             {new_count} new, {skipped} already processed (--force to re-process)")
+    else:
+        print(f"Transcripts: {total} found in '{input_dir}'")
+    print(f"Backend:     {'Claude API' if args.use_claude else f'LM Studio (local) - {url}'}")
+    print(f"Mode:        {'full' if args.full_transcripts else 'condensed'}")
+
+    if new_count == 0:
+        print()
+        print(SEP * 60)
+        print(f"Done  0/{total} processed - all files already in '{output_dir}/'")
+        print(f"      use --force to re-process")
+        sys.exit(0)
+
     print()
 
     results = []
-    for path in files:
-        result = process_file(path, args, output_dir)
+    failures = 0
+    for i, path in enumerate(new_files, 1):
+        result = process_file(path, args, output_dir, i, new_count)
         if result is not None:
             results.append(result)
+        else:
+            failures += 1
 
-    if args.aggregate and results:
+    if not args.no_aggregate and results:
         build_aggregate(results, output_dir)
 
-    print(
-        f"\nDone. Processed {len(results)}/{len(files)} files. "
-        f"Output in '{output_dir}/'."
-    )
+    health_scores = [
+        r.get("health_score")
+        for r in results
+        if r and isinstance(r.get("health_score"), (int, float))
+    ]
+    avg_health = round(sum(health_scores) / len(health_scores), 1) if health_scores else None
+
+    print()
+    print(SEP * 60)
+    summary = f"Done  {len(results)}/{new_count} processed"
+    if avg_health is not None:
+        summary += f" - avg health {avg_health}"
+    summary += f" - output in '{output_dir}/'"
+    print(summary)
+    if failures:
+        print(f"      {failures} failed - re-run with --input-dir to retry individual files")
+    if skipped:
+        print(f"      {skipped} skipped (already processed)")
 
 
 if __name__ == "__main__":

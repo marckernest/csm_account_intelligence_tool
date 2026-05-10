@@ -1,6 +1,7 @@
 .env
-fathom_transcripts/*
-!fathom_transcripts/.gitkeep
+raw_transcripts/*
+!raw_transcripts/.gitkeep
 output/
 __pycache__/
 *.pyc
+Project_Plan_AccountIntelligenceTool.md
