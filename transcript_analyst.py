@@ -366,6 +366,12 @@ def main():
     )
 
     parser.add_argument(
+        "--file",
+        type=str,
+        default=None,
+        help="Process a single transcript file (overrides --input-dir)",
+    )
+    parser.add_argument(
         "--input-dir",
         default="./raw_transcripts",
         help="Directory with transcript .md files (default: ./raw_transcripts)",
@@ -432,10 +438,18 @@ def main():
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    all_files = sorted(input_dir.glob("*.md"))
-    if not all_files:
-        print(f"No .md files found in '{input_dir}'.")
-        sys.exit(0)
+    if args.file:
+        file_path = Path(args.file)
+        if not file_path.exists():
+            print(f"Error: File '{file_path}' not found.")
+            sys.exit(1)
+        all_files = [file_path]
+        input_dir = file_path.parent
+    else:
+        all_files = sorted(input_dir.glob("*.md"))
+        if not all_files:
+            print(f"No .md files found in '{input_dir}'.")
+            sys.exit(0)
 
     new_files = []
     skipped = 0
@@ -496,7 +510,7 @@ def main():
     summary += f" - output in '{output_dir}/'"
     print(summary)
     if failures:
-        print(f"      {failures} failed - re-run with --input-dir to retry individual files")
+        print(f"      {failures} failed - re-run with --file <path> to retry individual files")
     if skipped:
         print(f"      {skipped} skipped (already processed)")
 

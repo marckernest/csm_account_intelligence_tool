@@ -1,6 +1,7 @@
 .env
 raw_transcripts/*
 !raw_transcripts/.gitkeep
+!raw_transcripts/example_transcript.md
 output/
 __pycache__/
 *.pyc
