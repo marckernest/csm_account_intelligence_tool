@@ -258,6 +258,15 @@ def parse_response(text):
     return None
 
 
+_SELF_NAMES = {"marck", "marck ernest", "passion marck", "marck passion"}
+
+def derive_account_name(participants):
+    non_self = [p for p in participants if p.strip().lower() not in _SELF_NAMES]
+    if non_self:
+        return ", ".join(non_self)
+    return "(solo)"
+
+
 def process_file(path, args, output_dir, index, total):
     print(f"[{index}/{total}] {path.name}")
 
@@ -321,7 +330,7 @@ def process_file(path, args, output_dir, index, total):
                 health_str += f"  {CHAR_WARN} low"
 
     result["_file"] = path.name
-    result["_account_name"] = data["account_name"]
+    result["_account_name"] = derive_account_name(data["participants"])
     result["_call_date"] = data["date"]
     result["_participants"] = data["participants"]
 
@@ -422,8 +431,15 @@ def main():
         action="store_true",
         help="Re-process transcripts even if output already exists",
     )
+    parser.add_argument(
+        "--self-name",
+        action="append",
+        default=[],
+        help="Your name as it appears in _participants (repeatable, e.g. --self-name 'Marck' --self-name 'Marck Ernest')",
+    )
 
     args = parser.parse_args()
+    _SELF_NAMES.update(n.strip().lower() for n in args.self_name)
 
     input_dir = Path(args.input_dir)
     output_dir = Path(args.output_dir)

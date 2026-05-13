@@ -6,3 +6,4 @@ output/
 __pycache__/
 *.pyc
 Project_Plan_AccountIntelligenceTool.md
+migrate_account_names.py
