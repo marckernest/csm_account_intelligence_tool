@@ -7,3 +7,6 @@ __pycache__/
 *.pyc
 Project_Plan_AccountIntelligenceTool.md
 migrate_account_names.py
+.self_names
+.exclude_names
+.filter_words

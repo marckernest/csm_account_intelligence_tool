@@ -259,12 +259,154 @@ def parse_response(text):
 
 
 _SELF_NAMES = {"marck", "marck ernest", "passion marck", "marck passion"}
+_INTERNAL_NAMES: set = {}
+_NAME_FILTERS: set = {"iphone", "ipad", "rta"}
 
-def derive_account_name(participants):
-    non_self = [p for p in participants if p.strip().lower() not in _SELF_NAMES]
-    if non_self:
-        return ", ".join(non_self)
-    return "(solo)"
+
+def _load_config_lines(filename):
+    path = Path(filename)
+    if not path.exists():
+        return []
+    lines = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if line and not line.startswith("#"):
+            lines.append(line.lower())
+    return lines
+
+
+def _strip_filters(name, filters):
+    """Remove employer filter words and suffixes from name while preserving case."""
+    result = name.strip()
+    result = result.replace("\u2018", "'").replace("\u2019", "'")
+    result = result.replace("\u201c", '"').replace("\u201d", '"')
+    for word in sorted(filters, key=len, reverse=True):
+        result = re.sub(r"\b" + re.escape(word) + r"\b", "", result, flags=re.IGNORECASE).strip()
+    result = re.sub(r"\s*\|.*", "", result).strip()
+    result = re.sub(r"\s*\([^)]*\)\s*$", "", result).strip()
+    result = re.sub(r"\bU\+\s*", "", result, flags=re.IGNORECASE).strip()
+    result = re.sub("\\s+[-\u2014\u2022]\\s+\\S+\\.\\S+\\s*$", "", result).strip()
+    result = re.sub("^\\S+\\.\\S+\\s+[-\u2014\u2022]\\s+", "", result).strip()
+    result = re.sub(r"'s$", "", result).strip()
+    result = result.rstrip(".,").strip()
+    result = re.sub(r"[,@\s]+", " ", result).strip()
+    return result
+
+
+def _clean_display_name(name, filters):
+    """Lowercased version for matching."""
+    return _strip_filters(name, filters).lower()
+
+
+def _strip_special(text):
+    """Remove trademark/copyright-like symbols for name matching."""
+    return re.sub(r"[\\u00ae\\u2122\\u00a9\u00ae\u2122\u00a9]", "", text)
+
+
+_CANONICAL_NAMES = {
+    "rebecca welsh": "Rebecca Mitchell Welsh",
+    "rebecca mitchell welsh": "Rebecca Mitchell Welsh",
+    "stan c": "Stanley Campbell",
+    "stan campbell": "Stanley Campbell",
+    "stanley campbell": "Stanley Campbell",
+    "stace saul": "Stacey Saul",
+    "stacey fc": "Stacey Saul",
+    "stacey marie saul": "Stacey Saul",
+    "stacey saul": "Stacey Saul",
+    "amy terry": "Amy Meyer-Terry",
+    "moera": "Mo\u00ebra Saule",
+    "kristin mcdermott": "Kristin MacDermott",
+    "michael mcdermott": "Michael MacDermott",
+    "macylemos": "Macy Lemos",
+    "equi-tape\u00ae equine kinesiology tape and education": "EquiTecs",
+    "equitecs - equine technologies institute": "EquiTecs",
+}
+
+
+def _clean_title_hint(title):
+    """Strip filter words, self-names and noise from a title to find name tokens."""
+    if not title:
+        return ""
+    cleaned = title.lower().strip()
+    for word in sorted(_NAME_FILTERS, key=len, reverse=True):
+        cleaned = re.sub(r"\b" + re.escape(word) + r"\b", "", cleaned, flags=re.IGNORECASE).strip()
+    for name in _SELF_NAMES:
+        cleaned = re.sub(r"\b" + re.escape(name) + r"\b", "", cleaned, flags=re.IGNORECASE).strip()
+    cleaned = re.sub(r"[^\w\s'-]", " ", cleaned)
+    cleaned = re.sub(r"\b(and|with|w|reschedule|kickoff|call|review|sesh|post|launch|prelaunch|dev|apple|account|final|follow|up|check|in|work|stuff)\b", " ", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\bw/?\S*", " ", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned
+
+
+def _find_primary_from_title(title, participants):
+    """Return the first participant whose name matches the cleaned title hint."""
+    cleaned = _clean_title_hint(title)
+    if not cleaned:
+        return None
+    cleaned_words = set(w for w in cleaned.split() if len(w) > 1)
+
+    for p in participants:
+        p_lower = _strip_special(p.strip().lower())
+        first_name = p_lower.split()[0] if p_lower.split() else ""
+        if not first_name or len(first_name) <= 1:
+            continue
+        if first_name in cleaned_words:
+            return p
+
+    for p in participants:
+        p_lower = _strip_special(p.strip().lower())
+        first_name = p_lower.split()[0] if p_lower.split() else ""
+        if not first_name or len(first_name) <= 2:
+            continue
+        for cw in cleaned_words:
+            norm_cw = _strip_special(cw)
+            if norm_cw.startswith(first_name) or first_name.startswith(norm_cw):
+                return p
+
+    return None
+
+
+def derive_account_name(participants, title=""):
+    # Filter out self and internal names
+    filtered = []
+    for p in participants:
+        lower = p.strip().lower()
+        if lower in _SELF_NAMES or lower in _INTERNAL_NAMES:
+            continue
+        cleaned = _clean_display_name(p, _NAME_FILTERS)
+        if not cleaned or len(cleaned) <= 2:
+            continue
+        if any(re.search(r"\b" + re.escape(n) + r"\b", cleaned) for n in _INTERNAL_NAMES):
+            continue
+        filtered.append(p)
+
+    # Title-based primary detection
+    if title and filtered:
+        primary = _find_primary_from_title(title, filtered)
+        if primary:
+            display = _strip_filters(primary, _NAME_FILTERS)
+            if display.islower():
+                display = display[0].upper() + display[1:]
+            display_lower = display.lower()
+            if display_lower in _CANONICAL_NAMES:
+                display = _CANONICAL_NAMES[display_lower]
+            return display if display else "(solo)"
+
+    # Fallback: joint account name from all non-excluded participants
+    seen = set()
+    result = []
+    for p in filtered:
+        display = _strip_filters(p, _NAME_FILTERS)
+        if display.islower():
+            display = display[0].upper() + display[1:]
+        display_lower = display.lower()
+        if display_lower in _CANONICAL_NAMES:
+            display = _CANONICAL_NAMES[display_lower]
+        if display.lower() not in seen:
+            seen.add(display.lower())
+            result.append(display)
+    return ", ".join(result) if result else "(solo)"
 
 
 def process_file(path, args, output_dir, index, total):
@@ -330,7 +472,7 @@ def process_file(path, args, output_dir, index, total):
                 health_str += f"  {CHAR_WARN} low"
 
     result["_file"] = path.name
-    result["_account_name"] = derive_account_name(data["participants"])
+    result["_account_name"] = derive_account_name(data["participants"], title=data.get("title", ""))
     result["_call_date"] = data["date"]
     result["_participants"] = data["participants"]
 
@@ -437,9 +579,26 @@ def main():
         default=[],
         help="Your name as it appears in _participants (repeatable, e.g. --self-name 'Marck' --self-name 'Marck Ernest')",
     )
+    parser.add_argument(
+        "--exclude-name",
+        action="append",
+        default=[],
+        help="Internal team member to exclude from _account_name (repeatable)",
+    )
+    parser.add_argument(
+        "--filter-word",
+        action="append",
+        default=[],
+        help="Word/phrase to strip from participant display names (repeatable)",
+    )
 
     args = parser.parse_args()
+    _SELF_NAMES.update(_load_config_lines(".self_names"))
     _SELF_NAMES.update(n.strip().lower() for n in args.self_name)
+    _INTERNAL_NAMES.update(_load_config_lines(".exclude_names"))
+    _INTERNAL_NAMES.update(n.strip().lower() for n in args.exclude_name)
+    _NAME_FILTERS.update(_load_config_lines(".filter_words"))
+    _NAME_FILTERS.update(n.strip().lower() for n in args.filter_word)
 
     input_dir = Path(args.input_dir)
     output_dir = Path(args.output_dir)
